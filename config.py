@@ -59,18 +59,6 @@ class ConfigWindow(QWidget):
         self.dbHostEdit.setText(self.dbHost)
         formLayout.addRow(self.dbHostLabel, self.dbHostEdit)
 
-        #self.certPathButton = QPushButton("Selecionar arquivo *.pfx",self)
-        #self.certPathEdit = QLineEdit(self)
-        #self.certPathEdit.setText(self.certPath)
-        #self.certPathButton.clicked.connect(self.selectCertPath)
-        #formLayout.addRow(self.certPathButton,self.certPathEdit)
-
-        #self.certPasswdLabel = QLabel("Senha do certificado:")
-        #self.certPasswdEdit = QLineEdit(self)
-        #self.certPasswdEdit.setEchoMode(QLineEdit.Password)
-        #self.certPasswdEdit.setText(self.certPasswd)
-        #formLayout.addRow(self.certPasswdLabel,self.certPasswdEdit)
-
         self.testButton = QPushButton("Testar Conexão",self)
         self.testButton.clicked.connect(self.testDbConn)
         formLayout.addRow(self.testButton)
