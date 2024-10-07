@@ -6,7 +6,14 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QFileDialog
                              QMessageBox, QProgressBar, QTableWidget, QTableWidgetItem,
                              QPlainTextEdit, QVBoxLayout, QWidget, QMenu, QAction)
 import mysql.connector
+from PyQt5.QtCore import QThread, pyqtSignal
+
 from config import ConfigWindow
+
+
+class Worker(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal()
 
 
 class MainWindow(QMainWindow):
@@ -43,6 +50,9 @@ class MainWindow(QMainWindow):
         self.btnSelectNfeFolder = QPushButton("Importar NFE", self)
         self.btnSelectNfeFolder.clicked.connect(self.selectNfeFolder)
 
+        self.btnSelectEventFolder = QPushButton("Importar Cancelados", self)
+        self.btnSelectEventFolder.clicked.connect(self.selectEventFolder)
+
         self.progressBar = QProgressBar(self)
         self.progressBar.setValue(0)
 
@@ -55,6 +65,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.btnSelectCteFolder)
         layout.addWidget(self.btnSelectNfeFolder)
+        layout.addWidget(self.btnSelectEventFolder)
         layout.addWidget(self.progressBar)
         layout.addWidget(self.table)
         layout.addWidget(self.consoleView)
@@ -62,6 +73,7 @@ class MainWindow(QMainWindow):
     def openConfigWindow(self):
         self.configWindow = ConfigWindow()
         self.configWindow.show()
+
     def displayMessage(self, stringMessage, color):
         cursor = self.consoleView.textCursor()
         cursor.movePosition(QTextCursor.End)  # Move o cursor para o fim do texto atual
@@ -75,14 +87,37 @@ class MainWindow(QMainWindow):
 
         # Role a visão para mostrar a última mensagem
         self.consoleView.verticalScrollBar().setValue(self.consoleView.verticalScrollBar().maximum())
+
     def selectCteFolder(self):
         folder_path = QFileDialog.getExistingDirectory(self, "Selecionar Pasta")
         if folder_path:
             self.proccessCteFilesInFolder(folder_path)
+
     def selectNfeFolder(self):
         nfeFolderPath = QFileDialog.getExistingDirectory(self, "Selecionar Pasta")
         if nfeFolderPath:
             self.processNfeFilesInFolder(nfeFolderPath)
+
+    def selectEventFolder(self):
+        eventFolderPath = QFileDialog.getExistingDirectory(self, "Selecionar Pasta")
+        if eventFolderPath:
+            self.proccessEventFilesInFolder(eventFolderPath)
+
+    def proccessEventFilesInFolder(self, eventFolderPath):
+        fileEventPath = [os.path.join(eventFolderPath, filename) for filename in os.listdir(eventFolderPath) if
+                         filename.endswith('xml')]
+        if not fileEventPath:
+            QMessageBox.warning(self, "Atenção", "Nenhum arquivo XML encontrado na pasta selecionada.")
+            return
+
+        self.progressBar.setMaximum(len(fileEventPath))
+        validEventItems, invalidEventItems = self.proccessEventFiles(fileEventPath)
+        self.saveEvents(validEventItems)
+        self.poplateTable(validEventItems, invalidEventItems)
+        QMessageBox.information(self, "Sucesso",
+                                f"{len(validEventItems)} arquivos XML processados e salvos com sucesso no banco de "
+                                f"dados!")
+
     def processNfeFilesInFolder(self, nfeFolderPath):
         fileNfePath = [os.path.join(nfeFolderPath, filename) for filename in os.listdir(nfeFolderPath) if
                        filename.endswith('.xml')]
@@ -96,6 +131,7 @@ class MainWindow(QMainWindow):
         self.poplateTable(validNfeItems, invalidNfeItems)
         QMessageBox.information(self, "Sucesso",
                                 f"{len(validNfeItems)} arquivos XML processados e salvos com sucesso no banco de dados!")
+
     def proccessCteFilesInFolder(self, folder_path):
         file_paths = [os.path.join(folder_path, filename) for filename in os.listdir(folder_path) if
                       filename.endswith('.xml')]
@@ -110,14 +146,107 @@ class MainWindow(QMainWindow):
         self.saveKeyNfe(keyItems)
         QMessageBox.information(self, "Sucesso",
                                 f"{len(valid_items)} arquivos XML processados e salvos com sucesso no banco de dados!")
+
+    def proccessEventFiles(self, fileEventPath):
+        validEventItems = []
+        invalidEventItems = []
+        self.progressBar.setValue(0)
+
+        for index, fileEventPath in enumerate(fileEventPath, start=1):
+            try:
+                parser = ET.XMLParser(encoding='ISO-8859-1')
+                tree = ET.parse(fileEventPath, parser=parser)
+                root = tree.getroot()
+
+                ns = {'cte':'http://www.portalfiscal.inf.br/cte'}
+                fileName = os.path.basename(fileEventPath)
+                self.displayMessage(f'Info: Processando arquivo: {fileName}',self.blue)
+
+                chCte = root.find('.//cte:chCTe', namespaces=ns)
+                dhEventoElement = root.find('.//cte:dhEvento',namespaces=ns)
+                dhEventoFull = dhEventoElement.text.strip()
+                dhEvento = '-'.join(reversed(dhEventoFull.split('T')[0].split('-')))
+                descEvento = root.find('.//cte:descEvento', namespaces=ns)
+                xJustEvento = root.find('.//cte:xJust',namespaces=ns)
+                nProt = root.find('.//cte:nProt', namespaces=ns)
+                infEvento = root.find('.//cte:infEvento',namespaces=ns)
+                infEventoID = infEvento.get('Id')
+
+                if infEventoID is None:
+                    invalidEventItems.append({
+                        'Item': fileName,
+                        'Tag': 'InfEventoID',
+                        'Observação': 'Documento inválido'
+                    })
+                    infEventoID = 'Não informado'
+                    continue
+
+                if nProt is None:
+                    invalidEventItems.append({
+                        'Item': fileName,
+                        'Tag': 'nProt',
+                        'Observação': 'Documento inválido'
+                    })
+                    nProt = 'Não informado'
+                    continue
+
+                if xJustEvento is None:
+                    invalidEventItems.append({
+                        'Item': fileName,
+                        'Tag': 'xJust',
+                        'Observação': 'Documento inválido'
+                    })
+                    xJustEvento = 'Não informado'
+                    continue
+
+                if descEvento is None:
+                    invalidEventItems.append({
+                        'Item': fileName,
+                        'Tag': 'descEvento',
+                        'Observação': 'Documento inválido'
+                    })
+                    descEvento = 'Não informado'
+                    continue
+
+                if chCte is None:
+                    invalidEventItems.append({
+                        'Item': fileName,
+                        'Tag': 'chCte',
+                        'Observação': 'Documento inválido'
+                    })
+                    continue
+
+                if dhEvento is None:
+                    invalidEventItems.append({
+                        'Item': fileName,
+                        'Tag': 'dhEvento',
+                        'Observação': 'Documento inválido'
+                    })
+                    continue
+
+                validEventItems.append({
+                    'chCte': chCte.text.strip(),
+                    'dhEvento': dhEvento,
+                    'descEvento': descEvento.text.strip(),
+                    'xJust': xJustEvento.text.strip(),
+                    'nProt': nProt.text.strip(),
+                    'infEvento': infEventoID
+                })
+
+            except Exception as e:
+                self.displayMessage(f'Erros: {e}', self.blue)
+                continue
+
+        return validEventItems, invalidEventItems
+
     def proccessNfeFiles(self, fileNfePath):
         validNfeItems = []
         invalidNfeItems = []
-
+        quantasnotas = 1
         self.progressBar.setValue(0)
         for index, fileNfePath in enumerate(fileNfePath, start=1):
             try:
-                parser = ET.XMLParser(encoding='UTF-8')
+                parser = ET.XMLParser(encoding='ISO-8859-1')
                 tree = ET.parse(fileNfePath, parser=parser)
                 root = tree.getroot()
 
@@ -207,34 +336,28 @@ class MainWindow(QMainWindow):
                                             'Observação': 'Campo vNfElement ausente ou vazio em ICMSTot'})
                     continue
 
-                vProdElement = totalElement.find('.//nfe:ICMSTot/nfe:vProd',namespaces=ns)
+                vProdElement = totalElement.find('.//nfe:ICMSTot/nfe:vProd', namespaces=ns)
                 if vProdElement is None:
-                    invalidNfeItems.append({'Item': fileNfeName,'Tag':'vProd','Observação':'Campo vProd ausente ou vazio.'})
+                    invalidNfeItems.append(
+                        {'Item': fileNfeName, 'Tag': 'vProd', 'Observação': 'Campo vProd ausente ou vazio.'})
                     continue
 
                 volElement = transpElement.find('nfe:vol', namespaces=ns)
                 if volElement is None:
                     invalidNfeItems.append({'Item': fileNfeName, 'Tag': 'volElement',
                                             'Observação': 'Campo volElement ausente ou vazio em Transp'})
-                    continue
+                    qVol = "1"  # Definindo valor padrão
+                    pesoL = "0.0"  # Definindo valor padrão para pesoL
+                    pesoB = "0.0"  # Definindo valor padrão para pesoB
 
-                qVolElement = volElement.find('nfe:qVol', namespaces=ns)
-                if qVolElement is None:
-                    invalidNfeItems.append({'Item': fileNfeName, 'Tag': 'volElement',
-                                            'Observação': 'Campo volElement ausente ou vazio em Transp'})
-                    continue
-
-                pesoLElement = volElement.find('nfe:pesoL', namespaces=ns)
-                if pesoLElement is None:
-                    invalidNfeItems.append({'Item': fileNfeName, 'Tag': 'pesoLElement',
-                                            'Observação': 'Campo pesoLElement ausente ou vazio em Transp'})
-                    continue
-
-                pesoBelement = volElement.find('nfe:pesoB', namespaces=ns)
-                if pesoBelement is None:
-                    invalidNfeItems.append({'Item': fileNfeName, 'Tag': 'pesoLElement',
-                                            'Observação': 'Campo pesoLElement ausente ou vazio em Transp'})
-                    continue
+                else:
+                    # Processamento de qVol
+                    qVolElement = volElement.find('nfe:qVol', namespaces=ns)
+                    qVol = qVolElement.text.strip() if qVolElement is not None else "0"
+                    pesoLElement = volElement.find('nfe:pesoL', namespaces=ns)
+                    pesoL = pesoLElement.text.strip() if pesoLElement is not None else "0.1"
+                    pesoBelement = volElement.find('nfe:pesoB', namespaces=ns)
+                    pesoB = pesoBelement.text.strip() if pesoBelement is not None else "0.1"
 
                 protNFeElement = root.find('.//nfe:protNFe', namespaces=ns)
                 if protNFeElement is None:
@@ -248,11 +371,7 @@ class MainWindow(QMainWindow):
                                             'Observação': 'Campo chNFeElement ausente ou vazio em protNFe'})
                     continue
 
-
                 chNFe = chNFeElement.text.strip()
-                pesoB = pesoBelement.text.strip()
-                pesoL = pesoLElement.text.strip()
-                qVol = qVolElement.text.strip()
                 vNF = vNfElement.text.strip()
                 vFrete = vFreteElement.text.strip()
                 ufDest = ufDestElement.text.strip()
@@ -279,16 +398,19 @@ class MainWindow(QMainWindow):
                     'pesoL': pesoL,
                     'pesoB': pesoB,
                     'chNFe': chNFe,
-                    'vProd':vProd
+                    'vProd': vProd
                 })
 
                 self.progressBar.setValue(index)
 
             except Exception as e:
+                quantasnotas += 1
                 self.displayMessage(f'Erro: {e}', self.blue)
+                print(f'Erro {e} {chNFe} {quantasnotas}')
                 continue
 
         return validNfeItems, invalidNfeItems
+
     def proccessXmlFiles(self, file_paths):
         valid_items = []
         invalid_items = []
@@ -434,12 +556,14 @@ class MainWindow(QMainWindow):
                 continue
 
         return valid_items, invalid_items, keyItems
+
     def poplateTable(self, valid_items, invalid_items):
         self.table.setRowCount(len(invalid_items))
         for row, item in enumerate(invalid_items):
             self.table.setItem(row, 0, QTableWidgetItem(item['Item']))
             self.table.setItem(row, 1, QTableWidgetItem(item['Tag']))
             self.table.setItem(row, 2, QTableWidgetItem(item['Observação']))
+
     def connDbInstance(self):
         try:
             self.conn = mysql.connector.connect(
@@ -450,6 +574,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             self.displayMessage(f"Erro: erro ao conectar com o banco de dados {e}", self.red)
+
     def saveToDatabase(self, items):
         try:
             cursor = self.conn.cursor()
@@ -496,7 +621,7 @@ class MainWindow(QMainWindow):
                     self.displayMessage(f'Error: Erro ao inserir registro (chave duplicada): {item['chCte']}', self.red)
                     self.conn.rollback()
                 except Exception as e:
-                    self.displayMessage(f'Error: {e}', self.red)
+                    self.displayMessage(f'Errors: {e}', self.red)
                     self.conn.rollback()
 
                 self.progressBar.setValue(index)
@@ -505,13 +630,14 @@ class MainWindow(QMainWindow):
             self.displayMessage(f'Error: {e}', self.blue)
 
         except Exception as e:
-            self.displayMessage(f'Error: {e}', self.blue)
+            self.displayMessage(f'Error exce: {e}', self.blue)
 
         finally:
             if 'conn' in locals() and self.conn.is_connected():
                 self.progressBar.setValue(0)
                 cursor.close()
                 self.conn.close()
+
     def saveNfeToDatabase(self, items):
         try:
             cursor = self.conn.cursor()
@@ -577,6 +703,7 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             self.displayMessage(f'Erro inesperado: {e}', self.blue)
+            print('Error' + e)
 
         finally:
             if 'cursor' in locals():
@@ -584,6 +711,7 @@ class MainWindow(QMainWindow):
             if 'conn' in locals() and self.conn.is_connected():
                 self.conn.close()
             self.progressBar.setValue(0)
+
     def saveKeyNfe(self, items):
         try:
 
@@ -631,15 +759,70 @@ class MainWindow(QMainWindow):
 
         except mysql.connector.Error as e:
             self.displayMessage(f'Error: {e}', self.blue)
-
+            print('Error' + e)
         except Exception as e:
             self.displayMessage(f'Error: {e}', self.blue)
+            print('Error' + e)
 
         finally:
             if 'conn' in locals() and self.conn.is_connected():
                 cursor.close()
                 self.conn.close()
 
+    def saveEvents(self,items):
+
+
+        try:
+            cursor = self.conn.cursor()
+
+            cursor.execute('''CREATE TABLE IF NOT EXISTS cte_evento(
+                                id INT AUTO_INCREMENT PRIMARY KEY,
+                                chCte VARCHAR(255) UNIQUE,
+                                dhEvento VARCHAR(255),
+                                descEvento VARCHAR(255),
+                                xJust VARCHAR(255),
+                                nProt VARCHAR(255),
+                                infEvento VARCHAR(255)
+            )
+            ''')
+
+            insertEventoQuery = '''
+                INSERT INTO cte_evento (chCte,dhEvento,DescEvento,xJust,nProt, infEvento) VALUES (%s, %s, %s, %s, %s, %s)
+            '''
+
+            for index, item in enumerate(items, start=1):
+                dataTuple = (
+                    item['chCte'],
+                    item['dhEvento'],
+                    item['descEvento'],
+                    item['xJust'],
+                    item['nProt'],
+                    item['infEvento']
+                )
+
+                try:
+                    cursor.execute(insertEventoQuery,dataTuple)
+                    self.conn.commit()
+                    self.displayMessage(f'Info: Dados gravados com sucesso: {item['chCte']}', self.blue)
+
+                except mysql.connector.IntegrityError as e:
+                    self.displayMessage(f'Error: Erro ao inserir registro (chave duplicada): {item['chCte']}', self.red)
+                    self.conn.rollback()
+                except Exception as e:
+                    self.displayMessage(f'Error: {e}', self.red)
+                    self.conn.rollback()
+
+        except mysql.connector.Error as e:
+            self.displayMessage(f'Erro de conexão: {e}', self.blue)
+
+        except Exception as e:
+            self.displayMessage(f'Error exception: {e}', self.blue)
+
+        finally:
+            if 'conn' in locals() and self.conn.is_connected():
+                self.progressBar.setValue(0)
+                cursor.close()
+                self.conn.close()
 
 def main():
     app = QApplication(sys.argv)
